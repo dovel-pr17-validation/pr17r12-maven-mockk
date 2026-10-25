@@ -1,0 +1,286 @@
+package io.mockk.it
+
+import io.mockk.Called
+import io.mockk.Ordering
+import io.mockk.coVerify
+import io.mockk.impl.annotations.RelaxedMockK
+import io.mockk.junit5.MockKExtension
+import io.mockk.verify
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.extension.ExtendWith
+import kotlin.test.assertFails
+import kotlin.test.assertTrue
+
+@ExtendWith(MockKExtension::class)
+class TimeoutTest {
+    class MockCls {
+        fun run() {
+        }
+
+        fun stop() {
+        }
+
+        fun take(value: Int) {
+        }
+    }
+
+    @RelaxedMockK
+    lateinit var mock1: MockCls
+
+    @RelaxedMockK
+    lateinit var mock2: MockCls
+
+    @Test
+    fun timeoutOnNeverCalled() {
+        assertFails {
+            verify(timeout = 500) {
+                mock1.run()
+            }
+        }
+    }
+
+    @Test
+    fun timeoutOnCalledLater() {
+        launch {
+            delay(1000)
+            mock1.run()
+        }
+
+        assertFails {
+            verify(timeout = 500) {
+                mock1.run()
+            }
+        }
+    }
+
+    @Test
+    fun okIfCalledEarlier() {
+        launch {
+            delay(200)
+            mock1.run()
+        }
+
+        verify(timeout = 500) {
+            mock1.run()
+        }
+    }
+
+    @Test
+    fun failIfOneMockCalled() {
+        launch {
+            delay(200)
+            mock1.run()
+        }
+
+        assertFails {
+            verify(timeout = 500) {
+                mock1.run()
+                mock2.run()
+            }
+        }
+    }
+
+    @Test
+    fun failIfOneMockCalledAndOneLater() {
+        launch {
+            delay(200)
+            mock1.run()
+            delay(1000)
+            mock2.run()
+        }
+
+        assertFails {
+            verify(timeout = 500) {
+                mock1.run()
+                mock2.run()
+            }
+        }
+    }
+
+    @Test
+    fun okIfBothInTime() {
+        launch {
+            delay(100)
+            mock1.run()
+            delay(100)
+            mock2.run()
+        }
+
+        verify(timeout = 500) {
+            mock1.run()
+            mock2.run()
+        }
+    }
+
+    @Test
+    fun longTimeout() {
+        launch {
+            delay(500)
+            mock1.run()
+        }
+
+        val start = System.currentTimeMillis()
+        verify(timeout = 5000) {
+            mock1.run()
+        }
+        val end = System.currentTimeMillis()
+        val duration = end - start
+
+        assertTrue(duration < 1500, "waiting too long")
+    }
+
+    @Test
+    fun wasNotCalledFailsIfCalledBeforeTimeout() {
+        launch {
+            delay(200)
+            mock1.run()
+        }
+
+        assertFails {
+            verify(timeout = 500) {
+                mock1 wasNot Called
+            }
+        }
+    }
+
+    @Test
+    fun wasNotCalledOkIfCalledAfterTimeout() {
+        launch {
+            delay(1000)
+            mock1.run()
+        }
+
+        verify(timeout = 500) {
+            mock1 wasNot Called
+        }
+    }
+
+    @Test
+    fun exactlyZeroFailsIfCalledBeforeTimeout() {
+        launch {
+            delay(200)
+            mock1.run()
+        }
+
+        assertFails {
+            verify(exactly = 0, timeout = 500) {
+                mock1.run()
+            }
+        }
+    }
+
+    @Test
+    fun exactlyZeroOkIfCalledAfterTimeout() {
+        launch {
+            delay(1000)
+            mock1.run()
+        }
+
+        verify(exactly = 0, timeout = 500) {
+            mock1.run()
+        }
+    }
+
+    @Test
+    fun inverseFailsIfCalledBeforeTimeout() {
+        launch {
+            delay(200)
+            mock1.run()
+        }
+
+        assertFails {
+            verify(inverse = true, timeout = 500) {
+                mock1.run()
+            }
+        }
+    }
+
+    @Test
+    fun coVerifyExactlyOnceFailsIfCalledAgainBeforeTimeout() {
+        launch {
+            delay(100)
+            mock1.run()
+            delay(200)
+            mock1.run()
+        }
+
+        assertFails {
+            coVerify(exactly = 1, timeout = 500) {
+                mock1.run()
+            }
+        }
+    }
+
+    @Test
+    fun sequenceFailsIfAnotherCallBeforeTimeout() {
+        launch {
+            delay(100)
+            mock1.run()
+            delay(200)
+            mock1.stop()
+        }
+
+        assertFails {
+            verify(ordering = Ordering.SEQUENCE, timeout = 500) {
+                mock1.run()
+            }
+        }
+    }
+
+    @Test
+    fun sequenceOkIfAnotherCallAfterTimeout() {
+        launch {
+            delay(100)
+            mock1.run()
+            delay(900)
+            mock1.stop()
+        }
+
+        verify(ordering = Ordering.SEQUENCE, timeout = 500) {
+            mock1.run()
+        }
+    }
+
+    @Test
+    fun allFailsIfUnmatchedCallBeforeTimeout() {
+        launch {
+            delay(100)
+            mock1.run()
+            delay(200)
+            mock1.stop()
+        }
+
+        assertFails {
+            verify(ordering = Ordering.ALL, timeout = 500) {
+                mock1.run()
+            }
+        }
+    }
+
+    @Test
+    fun waitsForTheNextCallAfterAnUnmatchedOne() {
+        var checks = 0
+        launch {
+            delay(100)
+            mock1.take(1)
+        }
+
+        assertFails {
+            verify(timeout = 500) {
+                mock1.take(
+                    match {
+                        checks++
+                        it == 2
+                    },
+                )
+            }
+        }
+        assertTrue(checks < 10, "matcher was checked $checks times")
+    }
+
+    private fun launch(block: () -> Unit) {
+        Thread(block).start()
+    }
+
+    private fun delay(ms: Long) = Thread.sleep(ms)
+}
